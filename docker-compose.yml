@@ -1,0 +1,163 @@
+version: '3.8'
+
+services:
+  # MinIO - Armazenamento S3-compatible
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"   # API
+      - "9090:9090"   # Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9090"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # MinIO Client - Para criar buckets automaticamente
+  minio-setup:
+    image: minio/mc:latest
+    container_name: minio-setup
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/raw --ignore-existing;
+      mc mb myminio/processed --ignore-existing;
+      mc mb myminio/models --ignore-existing;
+      exit 0;
+      "
+
+  # PostgreSQL - Banco de dados
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: weather_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql_scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI - Ingestão de dados
+  fastapi:
+    build:
+      context: ./fastapi
+      dockerfile: Dockerfile
+    container_name: fastapi
+    ports:
+      - "8000:8000"
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: weather_db
+    volumes:
+      - ./fastapi:/app
+      - ./data:/app/data
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # JupyterLab - Análise e modelagem
+  jupyterlab:
+    build:
+      context: ./jupyterlab
+      dockerfile: Dockerfile
+    container_name: jupyterlab
+    ports:
+      - "8880:8888"
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: weather_db
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes:
+      - ./notebooks:/home/jovyan/work/notebooks
+      - ./data:/home/jovyan/work/data
+      - ./data_utils.py:/home/jovyan/work/data_utils.py
+      - jupyter_data:/home/jovyan/work
+    depends_on:
+      - postgres
+      - minio
+      - mlflow
+    command: start-notebook.sh --NotebookApp.token='' --NotebookApp.password='' --NotebookApp.allow_origin='*'
+
+  # MLFlow - Versionamento de modelos
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.8.1
+    container_name: mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql://postgres:postgres@postgres:5432/weather_db
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: s3://models/
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    volumes:
+      - mlflow_data:/mlflow
+    depends_on:
+      - postgres
+      - minio
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri ${MLFLOW_BACKEND_STORE_URI} --default-artifact-root ${MLFLOW_DEFAULT_ARTIFACT_ROOT}
+
+  # Trendz Analytics - Dashboards
+  # Nota: Trendz pode requerer configuração adicional
+  # Alternativa: usar ThingsBoard ou outra ferramenta de dashboard
+  trendz:
+    image: thingsboard/trendz:latest
+    container_name: trendz
+    ports:
+      - "8888:8080"
+    environment:
+      TB_API_ENDPOINT: http://localhost:9090
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: weather_db
+    volumes:
+      - trendz_data:/data
+    depends_on:
+      - postgres
+    # Se a imagem não estiver disponível, comente este serviço
+    # e use uma alternativa como Grafana ou Streamlit
+
+volumes:
+  minio_data:
+  postgres_data:
+  jupyter_data:
+  mlflow_data:
+  trendz_data:
+
+networks:
+  default:
+    name: weather_network
+

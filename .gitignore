@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# Data
+data/processed/
+*.csv
+!data/dados_*/dados_*.CSV
+
+# Environment
+.env
+.env.local
+
+# Docker
+.docker/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# MLFlow
+mlruns/
+mlflow_data/
+
+# Reports
+reports/*.pdf
+reports/*.html
+!reports/.gitkeep
+
