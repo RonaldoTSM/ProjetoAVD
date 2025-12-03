@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Script para fazer upload de todos os arquivos CSV para o MinIO via FastAPI
+Script simplificado para fazer upload de todos os arquivos CSV para o MinIO via FastAPI
+Versão sem dependências extras (sem tqdm)
 """
 import os
 import sys
 import requests
 from pathlib import Path
-from tqdm import tqdm
 
 API_URL = "http://localhost:8000"
 DATA_DIR = Path("data")
@@ -56,19 +56,25 @@ def main():
     success_count = 0
     error_count = 0
     
-    for csv_file in tqdm(csv_files, desc="Enviando arquivos"):
+    for i, csv_file in enumerate(csv_files, 1):
+        print(f"[{i}/{len(csv_files)}] Enviando {csv_file.name}...", end=" ")
         result = upload_file(csv_file)
         
         if result.get("status") == "success":
             success_count += 1
+            print("Sucesso")
         else:
             error_count += 1
-            print(f"\nErro ao enviar {csv_file.name}: {result.get('message', 'Erro desconhecido')}")
+            print(f"Erro: {result.get('message', 'Erro desconhecido')}")
     
-    print(f"\n=== Upload concluído ===")
+    print(f"\n=== Upload concluido ===")
     print(f"Sucesso: {success_count}")
     print(f"Erros: {error_count}")
     print(f"Total: {len(csv_files)}")
+    
+    if success_count > 0:
+        print(f"\n{success_count} arquivo(s) enviado(s) com sucesso!")
+        print("   Verifique no MinIO: http://localhost:9091 (bucket raw/)")
 
 if __name__ == "__main__":
     main()

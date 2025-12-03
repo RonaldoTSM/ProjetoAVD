@@ -8,12 +8,12 @@ echo ""
 
 # Verificar se a API está rodando
 if ! curl -s "$API_URL/health" > /dev/null; then
-    echo "❌ Erro: API não está respondendo em $API_URL"
-    echo "   Certifique-se de que o FastAPI está rodando (docker-compose up)"
+    echo "Erro: API nao esta respondendo em $API_URL"
+    echo "   Certifique-se de que o FastAPI esta rodando (docker-compose up)"
     exit 1
 fi
 
-echo "✓ API está respondendo"
+echo "API esta respondendo"
 echo ""
 
 # Contador
@@ -41,9 +41,9 @@ for csv_file in data/dados_*/dados_*.CSV data/dados_*/dados_*.csv; do
             -F "file=@$csv_file")
         
         if echo "$response" | grep -q "success"; then
-            echo "  ✓ Sucesso"
+            echo "  Sucesso"
         else
-            echo "  ✗ Erro: $response"
+            echo "  Erro: $response"
         fi
     fi
 done

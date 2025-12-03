@@ -159,7 +159,34 @@ async def upload_file(file: UploadFile = File(...)):
         
         # Ler arquivo
         contents = await file.read()
-        df = pd.read_csv(BytesIO(contents), sep=';', encoding='latin1')
+        # Arquivos do INMET têm metadados nas primeiras linhas, precisamos encontrar onde começam os dados
+        content_str = contents.decode('latin1')
+        lines = content_str.split('\n')
+        
+        # Procurar linha que começa com "Data" (cabeçalho)
+        header_line = None
+        for i, line in enumerate(lines):
+            if line.strip().startswith('Data') and 'Hora' in line:
+                header_line = i
+                break
+        
+        if header_line is None:
+            # Se não encontrar, tentar ler normalmente
+            header_line = 0
+        
+        # Ler CSV pulando as linhas de metadados
+        try:
+            df = pd.read_csv(
+                BytesIO(contents), 
+                sep=';', 
+                encoding='latin1', 
+                skiprows=header_line,
+                on_bad_lines='skip', 
+                engine='python'
+            )
+        except Exception as e:
+            logger.error(f"Erro ao ler CSV: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Erro ao ler arquivo CSV: {str(e)}")
         
         # Adicionar metadados
         df['ingestion_date'] = datetime.now().isoformat()
