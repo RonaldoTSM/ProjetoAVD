@@ -8,7 +8,12 @@
 
 ## Membros do Grupo
 
-*Adicione os nomes e GitHub dos membros do grupo aqui*
+- Brandon Hunt
+- Letícia Lopes
+- Luís Melo
+- Luca Gomes
+- Lucas Rosati
+- Ronaldo Souto Maior
 
 ## Objetivo
 
