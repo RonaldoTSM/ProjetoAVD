@@ -68,104 +68,239 @@ FastAPI (8000) -> MinIO (9000) -> PostgreSQL (5434)
    - Armazenamento de artefatos no MinIO
    - Acesso: http://localhost:5001
 
-## Como Executar
+## Como Executar o Projeto Completo
 
 ### Pré-requisitos
 
 - Docker e Docker Compose instalados
 - Git
 - Pelo menos 4GB de RAM disponível
+- Navegador web
 
-### Instalação e Execução
+### Passo a Passo Completo
 
-1. **Clone o repositório**:
+#### 1. Iniciar os Serviços Docker
+
 ```bash
+# Clone o repositório (se ainda não tiver)
 git clone <url-do-repositorio>
 cd classificacao_conforto_termico
-```
 
-2. **Inicie todos os serviços**:
-```bash
+# Inicie todos os serviços
 docker-compose up -d
 ```
 
-3. **Aguarde os serviços iniciarem** (pode levar alguns minutos na primeira execução):
+Aguarde alguns minutos para todos os serviços iniciarem. Verifique o status:
+
 ```bash
 docker-compose ps
 ```
 
-Todos os serviços devem estar com status "Up" e "healthy".
+Todos os serviços devem estar com status "Up".
 
-4. **Acesse os serviços**:
+#### 2. Upload de Dados via FastAPI
 
-   - **FastAPI**: http://localhost:8000
-     - Documentação interativa: http://localhost:8000/docs
+1. **Acesse a documentação interativa da FastAPI**:
+   - URL: http://localhost:8000/docs
+
+2. **Faça upload de todos os arquivos CSV**:
+   - Na interface do FastAPI, encontre o endpoint `/upload`
+   - Clique em "Try it out"
+   - Clique em "Choose File" e selecione os arquivos CSV da pasta `data/`
+   - Para fazer upload de múltiplos arquivos, repita o processo ou use o script:
    
-   - **MinIO Console**: http://localhost:9091
-     - Usuário: `minioadmin`
-     - Senha: `minioadmin`
+   ```bash
+   python scripts/upload_data.py
+   ```
+
+   **Importante**: Faça upload de todos os arquivos CSV antes de prosseguir.
+
+#### 3. Processar Dados no JupyterLab
+
+1. **Acesse o JupyterLab**:
+   - URL: http://localhost:8880
+   - Não é necessário senha
+
+2. **Abra o terminal no JupyterLab**:
+   - Clique em "File" → "New" → "Terminal"
+
+3. **Execute o notebook 02 (processamento)**:
+   - No terminal, execute:
    
-   - **JupyterLab**: http://localhost:8880
-     - Sem senha (apenas para desenvolvimento)
+   ```bash
+   cd /home/jovyan/work/notebooks
+   python 02_processamento_limpeza.py
+   ```
    
-   - **MLFlow**: http://localhost:5001
+   Ou abra o arquivo `02_processamento_limpeza.py` e execute todas as células.
+
+   Este script irá:
+   - Ler todos os arquivos do bucket `raw/` no MinIO
+   - Limpar e processar os dados
+   - Salvar na tabela `weather_hourly` do PostgreSQL
+   - Criar dados processados no bucket `processed/` do MinIO
+
+#### 4. Executar Notebook 05 (Envio para ThingsBoard)
+
+**IMPORTANTE**: 
+- Este passo pode ser executado ANTES ou DEPOIS de configurar o ThingsBoard
+- Se executar antes, você precisará atualizar os tokens depois de criar os dispositivos
+- Se executar depois, você já terá os tokens dos dispositivos
+
+1. **No JupyterLab, abra o arquivo `05_push`**:
+   - Localização: `notebooks/05_push`
+   - Este é um script Python que envia dados para o ThingsBoard
+
+2. **Edite o token do dispositivo** (se já tiver criado dispositivos no ThingsBoard):
+   - No código, localize a seção `CITY_DEVICES`
+   - Substitua os tokens pelos tokens reais dos seus dispositivos no ThingsBoard
+   - Você obterá os tokens após criar os dispositivos no ThingsBoard (passo 5.6)
+   - Se ainda não criou os dispositivos, pode usar um token temporário e atualizar depois
+
+3. **Execute o script**:
+   - Execute todas as células ou rode via terminal:
    
-   - **PostgreSQL**: `localhost:5434`
-     - Usuário: `postgres`
-     - Senha: `postgres`
-     - Database: `weather_db`
+   ```bash
+   python /home/jovyan/work/notebooks/05_push
+   ```
+   
+   Este script:
+   - Lê dados processados do MinIO (bucket `processed/`)
+   - Classifica conforto térmico
+   - Envia dados para o ThingsBoard via API REST
+   - Envia dados de todas as 13 cidades de Pernambuco
 
-### Upload de Dados
+#### 5. Configurar ThingsBoard
 
-#### Opção 1: Via FastAPI (Recomendado)
+1. **Acesse o ThingsBoard**:
+   - URL: http://localhost:8080
 
-```bash
-# Via curl
-curl -X POST "http://localhost:8000/upload" \
-  -H "accept: application/json" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@data/dados_2020/dados_recife_2020.CSV"
+2. **Login inicial**:
+   - Email: `sysadmin@thingsboard.org`
+   - Senha: `sysadmin`
 
-# Ou via interface web em http://localhost:8000/docs
+3. **Criar um Tenant**:
+   - Após fazer login, você verá a tela de administração
+   - Vá em "Tenants" → "Add Tenant"
+   - Preencha os dados do tenant (nome, email, etc.)
+   - Salve o tenant
+
+4. **Acessar página de administração do perfil**:
+   - No menu, vá em "Profile" ou "Administration"
+   - Configure as permissões necessárias
+
+5. **Fazer login no Tenant criado**:
+   - Faça logout do sysadmin
+   - Faça login com as credenciais do tenant que você criou
+
+6. **Criar dispositivos** (se ainda não criou):
+   - Vá em "Devices" → "Add Device"
+   - Crie dispositivos para cada cidade (ou use um dispositivo genérico)
+   - **Copie o token de acesso de cada dispositivo** (você precisará para o notebook 05)
+
+#### 6. Configurar Trendz Analytics
+
+1. **Acesse o Trendz**:
+   - URL: http://localhost:8888
+
+2. **Fazer login**:
+   - Use as mesmas credenciais do tenant criado no ThingsBoard
+
+3. **Adicionar Data Source (PostgreSQL)**:
+   - Vá em "Settings" → "Data Sources" → "Add Data Source"
+   - Selecione "PostgreSQL"
+   - Preencha os dados de conexão:
+     - **URL JDBC**: `jdbc:postgresql://postgres:5432/weather_db`
+     - **Usuário**: `postgres`
+     - **Senha**: `postgres`
+   - Teste a conexão e salve
+
+4. **Criar uma View e adicionar componentes**:
+   - Vá em "Views" → "Create New View"
+   - Adicione componentes (gráficos, tabelas, etc.)
+   - Configure os componentes para usar a data source do PostgreSQL
+   - Selecione a tabela `weather_hourly` ou `weather_daily`
+   - Configure os campos e filtros desejados
+   - Salve a view
+
+#### 7. Visualizar Dashboards
+
+Agora você pode:
+- **ThingsBoard**: Visualizar dados em tempo real dos dispositivos
+- **Trendz**: Visualizar análises e gráficos customizados dos dados do PostgreSQL
+- **Streamlit**: Acessar http://localhost:8501 para dashboard alternativo
+
+### Resumo dos Passos (Ordem de Execução)
+
+```
+1. docker-compose up -d
+   └─ Inicia todos os serviços Docker
+
+2. FastAPI /docs → Upload de arquivos
+   └─ http://localhost:8000/docs → POST /upload → Selecionar todos os CSVs
+
+3. JupyterLab → Executar notebook 02
+   └─ http://localhost:8880 → Terminal → python 02_processamento_limpeza.py
+   └─ Processa dados do MinIO e salva no PostgreSQL
+
+4. ThingsBoard (8080) → Login sysadmin
+   └─ Email: sysadmin@thingsboard.org
+   └─ Senha: sysadmin
+
+5. ThingsBoard → Criar Tenant
+   └─ Tenants → Add Tenant → Preencher dados → Salvar
+
+6. ThingsBoard → Criar Dispositivos (opcional, mas recomendado)
+   └─ Devices → Add Device → Copiar token de acesso
+
+7. ThingsBoard → Login no Tenant criado
+   └─ Logout do sysadmin → Login com credenciais do tenant
+
+8. JupyterLab → Executar notebook 05
+   └─ Editar tokens em CITY_DEVICES (se já criou dispositivos)
+   └─ python /home/jovyan/work/notebooks/05_push
+   └─ Envia dados para ThingsBoard
+
+9. Trendz (8888) → Login no Tenant
+   └─ Usar mesmas credenciais do tenant do ThingsBoard
+
+10. Trendz → Settings → Add Data Source
+    └─ Tipo: PostgreSQL
+    └─ URL: jdbc:postgresql://postgres:5432/weather_db
+    └─ Usuário: postgres
+    └─ Senha: postgres
+    └─ Testar conexão → Salvar
+
+11. Trendz → Criar View → Adicionar componentes
+    └─ Views → Create New View
+    └─ Adicionar gráficos, tabelas, etc.
+    └─ Configurar para usar data source do PostgreSQL
+    └─ Selecionar tabela weather_hourly ou weather_daily
 ```
 
-#### Opção 2: Via Script Python
+### Notas Importantes
 
-```bash
-python scripts/upload_data.py
-```
+- **Ordem de execução**: Os passos 1-3 são obrigatórios nesta ordem. Os passos 4-11 podem ter alguma flexibilidade, mas a ordem sugerida é a mais eficiente.
 
-### Carregar Dados no PostgreSQL
+- **Tokens do ThingsBoard**: Se você executar o notebook 05 antes de criar os dispositivos, pode usar tokens temporários e atualizar depois. Ou crie os dispositivos primeiro e copie os tokens antes de executar o notebook 05.
 
-Após fazer upload dos dados no MinIO, é necessário carregá-los no PostgreSQL:
+- **Data Source no Trendz**: A string JDBC completa é: `jdbc:postgresql://postgres:5432/weather_db`
+  - Host: `postgres` (nome do container Docker)
+  - Porta: `5432` (porta interna do container)
+  - Database: `weather_db`
+  - Usuário: `postgres`
+  - Senha: `postgres`
 
-1. Acesse o JupyterLab: http://localhost:8880
-2. Crie um novo notebook ou abra um existente
-3. Execute:
+### Acessos Rápidos
 
-```python
-exec(open('/home/jovyan/work/notebooks/carregar_dados_postgresql.py').read())
-```
-
-Este script irá:
-- Ler todos os arquivos do bucket `raw/` no MinIO
-- Limpar e processar os dados
-- Salvar na tabela `weather_hourly` do PostgreSQL
-- Criar agregação diária na tabela `weather_daily`
-
-Tempo estimado: 5-10 minutos dependendo da quantidade de dados.
-
-### Processamento e Análise
-
-1. **Análise Exploratória (EDA)**:
-   - Acesse JupyterLab: http://localhost:8880
-   - Abra: `notebooks/04_eda_completo.ipynb`
-   - Execute todas as células para análise exploratória
-
-2. **Modelagem**:
-   - Abra: `notebooks/03_modelagem_conforto_termico.ipynb`
-   - Execute todas as células para treinar o modelo
-   - O modelo será automaticamente versionado no MLFlow e salvo no MinIO
+- **FastAPI**: http://localhost:8000/docs
+- **JupyterLab**: http://localhost:8880
+- **ThingsBoard**: http://localhost:8080
+- **Trendz Analytics**: http://localhost:8888
+- **Streamlit**: http://localhost:8501
+- **MLFlow**: http://localhost:5001
+- **MinIO Console**: http://localhost:9091 (usuário: minioadmin, senha: minioadmin)
+- **PostgreSQL**: `localhost:5434` (usuário: postgres, senha: postgres, database: weather_db)
 
 ## Dados
 
@@ -220,9 +355,10 @@ classificacao_conforto_termico/
 │   └── requirements.txt
 ├── notebooks/                  # Notebooks de análise
 │   ├── 01_eda_limpeza.ipynb
-│   ├── 02_processamento_limpeza.py
+│   ├── 02_processamento_limpeza.py  # Processa dados do MinIO para PostgreSQL
 │   ├── 03_modelagem_conforto_termico.ipynb
 │   ├── 04_eda_completo.ipynb
+│   ├── 05_push                  # Envia dados para ThingsBoard (executar antes de configurar TB)
 │   ├── carregar_dados_postgresql.py
 │   └── utils.py
 ├── sql_scripts/                # Scripts SQL
