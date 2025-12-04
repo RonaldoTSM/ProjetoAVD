@@ -7,7 +7,7 @@ from botocore.client import Config
 import pandas as pd
 from sqlalchemy import create_engine
 import mlflow
-from io import BytesIO
+from io import BytesIO, StringIO
 
 # Configuração MinIO
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
@@ -42,25 +42,43 @@ mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
 def read_from_minio(bucket: str, filename: str) -> pd.DataFrame:
     """
-    Lê um arquivo CSV do MinIO e retorna um DataFrame
-    
-    Args:
-        bucket: Nome do bucket (raw, processed, models)
-        filename: Nome do arquivo
-        
-    Returns:
-        DataFrame com os dados
+    Lê arquivos do INMET armazenados no MinIO, detecta automaticamente 
+    a linha do cabeçalho e retorna um DataFrame limpo.
     """
     try:
+        # Baixar bytes do MinIO
         response = s3_client.get_object(Bucket=bucket, Key=filename)
+        raw_bytes = response["Body"].read()
+
+        # Decodificar o arquivo como texto
+        raw_text = raw_bytes.decode("latin1").splitlines()
+
+        # Detectar automaticamente o cabeçalho real
+        header_index = None
+        for i, line in enumerate(raw_text):
+            # Cabeçalho padrão dos arquivos INMET
+            if line.strip().startswith("Data;") or line.strip().startswith("DATA;"):
+                header_index = i
+                break
+
+        if header_index is None:
+            raise ValueError("Não foi possível identificar o cabeçalho (linha 'Data;Hora') no CSV.")
+
+        # Reconstruir apenas a parte útil do arquivo
+        csv_clean = "\n".join(raw_text[header_index:])
+
+        # Ler com pandas com separador correto e engine robusta
         df = pd.read_csv(
-            BytesIO(response['Body'].read()),
-            sep=';',
-            encoding='latin1'
+            StringIO(csv_clean),
+            sep=";",
+            engine="python",
+            encoding="latin1",
         )
+
         return df
+
     except Exception as e:
-        print(f"Erro ao ler arquivo do MinIO: {str(e)}")
+        print(f"Erro ao ler arquivo do MinIO ({filename}): {str(e)}")
         raise
 
 

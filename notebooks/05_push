@@ -1,0 +1,180 @@
+import os
+import time
+import requests
+import pandas as pd
+import boto3
+
+# ==========================================
+# CONFIG MINIO
+# ==========================================
+
+MINIO_ENDPOINT = "http://minio:9000"
+MINIO_ACCESS_KEY = "minioadmin"
+MINIO_SECRET_KEY = "minioadmin"
+BUCKET = "processed"
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=MINIO_ENDPOINT,
+    aws_access_key_id=MINIO_ACCESS_KEY,
+    aws_secret_access_key=MINIO_SECRET_KEY,
+)
+
+# ==========================================
+# CONFIG THINGSBOARD
+# ==========================================
+
+TB_URL_TEMPLATE = "http://thingsboard:9090/api/v1/{token}/telemetry"
+
+CITY_DEVICES = {
+    "recife": "memc7hj1un5cFPG9VyaW",
+    "arco_verde": "memc7hj1un5cFPG9VyaW",
+    "cabrobo": "memc7hj1un5cFPG9VyaW",
+    "caruaru": "memc7hj1un5cFPG9VyaW",
+    "floresta": "memc7hj1un5cFPG9VyaW",
+    "garanhuns": "memc7hj1un5cFPG9VyaW",
+    "ibimirim": "memc7hj1un5cFPG9VyaW",
+    "ouricuri": "memc7hj1un5cFPG9VyaW",
+    "palmares": "memc7hj1un5cFPG9VyaW",
+    "petrolina": "memc7hj1un5cFPG9VyaW",
+    "salgueiro": "memc7hj1un5cFPG9VyaW",
+    "serra_talhada": "memc7hj1un5cFPG9VyaW",
+    "surubim": "memc7hj1un5cFPG9VyaW",
+}
+
+# ==========================================
+# FUNÇÕES
+# ==========================================
+
+def list_files(city_slug: str):
+    """ Lista arquivos 'processed_dados_<city_slug>_ANO.csv' """
+    prefix = f"processed_dados_{city_slug}_"
+    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
+    if "Contents" not in resp:
+        return []
+    return [obj["Key"] for obj in resp["Contents"]]
+
+def read_csv(key: str) -> pd.DataFrame:
+    """ Lê CSV do MinIO com separador ';' """
+    obj = s3.get_object(Bucket=BUCKET, Key=key)
+    df = pd.read_csv(obj["Body"], sep=";")
+    return df
+
+def classify_comfort(row):
+    # sua regra original
+    t = row["temperatura"]
+    ur = row["umidade_relativa"]
+
+    if pd.isna(t) or pd.isna(ur):
+        return "desconhecido"
+
+    if 22 <= t <= 27 and 40 <= ur <= 70:
+        return "confortavel"
+    elif t < 22:
+        return "frio"
+    else:
+        return "quente"
+
+MAP_IDX = {"frio": 0, "confortavel": 1, "quente": 2, "desconhecido": -1}
+
+def process_df(df: pd.DataFrame, cidade: str):
+    df = df.copy()
+
+    if "data_hora" not in df.columns:
+        raise Exception("CSV sem coluna data_hora")
+
+    df["data_hora"] = pd.to_datetime(df["data_hora"], errors="coerce")
+
+    # Preenche nulos
+    df["temperatura"] = pd.to_numeric(df["temperatura"], errors="coerce")
+    df["umidade_relativa"] = pd.to_numeric(df["umidade_relativa"], errors="coerce")
+    df["velocidade_vento"] = pd.to_numeric(df["velocidade_vento"], errors="coerce")
+
+    df["cidade"] = cidade
+
+    # comfort
+    df["comfort_class"] = df.apply(classify_comfort, axis=1)
+    df["comfort_index"] = df["comfort_class"].map(MAP_IDX)
+
+    df = df.dropna(subset=["data_hora"])
+
+    return df
+
+def send_to_tb(df: pd.DataFrame, token: str, cidade: str):
+    url = TB_URL_TEMPLATE.format(token=token)
+
+    print(f"[{cidade}] Enviando {len(df)} pontos...")
+
+    for idx, row in df.iterrows():
+        ts_ms = int(row["data_hora"].timestamp() * 1000)
+
+        payload = {
+            "ts": ts_ms,
+            "values": {
+                "temperatura": float(row["temperatura"]) if not pd.isna(row["temperatura"]) else None,
+                "umidade_relativa": float(row["umidade_relativa"]) if not pd.isna(row["umidade_relativa"]) else None,
+                "velocidade_vento": float(row["velocidade_vento"]) if not pd.isna(row["velocidade_vento"]) else None,
+                "comfort_class": row["comfort_class"],
+                "comfort_index": float(row["comfort_index"]),
+                "cidade": row["cidade"],
+            }
+        }
+
+        resp = requests.post(url, json=payload)
+        print(f"[{cidade}] {idx} -> {resp.status_code}")
+
+        time.sleep(0.02)
+
+def push_city(city_slug: str):
+    """ Carrega todos os CSVs de 'processed' e envia para o ThingsBoard """
+    files = list_files(city_slug)
+
+    if not files:
+        print(f"[{city_slug}] Nenhum arquivo encontrado no MinIO.")
+        return
+
+    all_frames = []
+
+    for key in files:
+        print(f"[{city_slug}] Lendo {key}")
+        df = read_csv(key)
+        df_proc = process_df(df, cidade=city_slug)
+        all_frames.append(df_proc)
+
+    df_final = pd.concat(all_frames, ignore_index=True)
+    send_to_tb(df_final, CITY_DEVICES[city_slug], cidade=city_slug)
+
+
+# ==========================================
+# 13 FUNÇÕES ESPECÍFICAS
+# ==========================================
+
+def send_recife(): push_city("recife")
+def send_arco_verde(): push_city("arco_verde")
+def send_cabrobo(): push_city("cabrobo")
+def send_caruaru(): push_city("caruaru")
+def send_floresta(): push_city("floresta")
+def send_garanhuns(): push_city("garanhuns")
+def send_ibimirim(): push_city("ibimirim")
+def send_ouricuru(): push_city("ouricuri")
+def send_palmares(): push_city("palmares")
+def send_petrolina(): push_city("petrolina")
+def send_salgueiro(): push_city("salgueiro")
+def send_serra_talhada(): push_city("serra_talhada")
+def send_surubim(): push_city("surubim")
+
+
+if __name__ == "__main__":
+    # Teste com 1 cidade:
+    send_arco_verde()
+    send_floresta()
+    send_salgueiro()
+    send_garanhuns()
+    send_cabrobo()
+    send_surubim()
+    send_ibimirim()
+    send_serra_talhada()
+    send_palmares()
+    send_petrolina()
+    send_caruaru()
+    send_ouricuru()

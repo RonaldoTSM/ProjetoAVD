@@ -13,6 +13,11 @@ from botocore.client import Config
 import requests
 from io import BytesIO
 import logging
+import os
+import io
+from fastapi import APIRouter
+
+router = APIRouter()
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
@@ -304,4 +309,43 @@ async def list_files(bucket: str = "raw"):
     except Exception as e:
         logger.error(f"Erro ao listar arquivos: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
+    
 
+
+@router.post("/upload_all_data")
+async def upload_all_data():
+    base_folder = "/app/data"
+    uploaded_files = []
+
+    for root, dirs, files in os.walk(base_folder):
+        for filename in files:
+            # Aceita .csv e .CSV etc.
+            if filename.lower().endswith(".csv"):
+                full_path = os.path.join(root, filename)
+
+                try:
+                    # Abrir arquivo como bytes
+                    with open(full_path, "rb") as f:
+                        s3_client.upload_fileobj(
+                            f,
+                            "raw",      # bucket
+                            filename    # nome do arquivo no bucket
+                        )
+
+                    uploaded_files.append(filename)
+
+                except Exception as e:
+                    return {
+                        "status": "error",
+                        "file": filename,
+                        "error": str(e)
+                    }
+
+    return {
+        "status": "success",
+        "total_uploaded": len(uploaded_files),
+        "files": uploaded_files
+    }
+
+
+app.include_router(router)

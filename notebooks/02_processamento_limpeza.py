@@ -2,6 +2,7 @@
 Script de processamento e limpeza de dados
 Lê dados do MinIO (raw), processa e salva em processed e PostgreSQL
 """
+
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -12,173 +13,168 @@ from utils import (
     list_minio_files
 )
 
+# ============================================================
+# FUNÇÃO PRINCIPAL DE LIMPEZA
+# ============================================================
+
 def clean_weather_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Limpa e trata dados meteorológicos
-    
-    Args:
-        df: DataFrame com dados brutos
-        
-    Returns:
-        DataFrame limpo
+    Limpa e trata dados meteorológicos, preservando DATA + HORA corretamente
+    e preservando números (corrige vírgula decimal -> ponto).
     """
+
     df_clean = df.copy()
-    
-    # Converter colunas de data/hora se necessário
-    date_columns = ['DATA', 'Data', 'data', 'DATA (YYYY-MM-DD)', 'HORA (UTC)']
-    for col in date_columns:
-        if col in df_clean.columns:
-            if 'HORA' in col:
-                df_clean[col] = pd.to_datetime(df_clean[col], format='%H%M', errors='coerce')
-            else:
-                df_clean[col] = pd.to_datetime(df_clean[col], errors='coerce')
-    
-    # Normalizar nomes de colunas (exemplos comuns do INMET)
+
+    # ============================================================
+    # 1. Mapear nomes de colunas para nomes padronizados
+    # ============================================================
+
     column_mapping = {
+        # INMET
         'TEMPERATURA DO AR - BULBO SECO, HORARIA (°C)': 'temperatura',
-        'TEMPERATURA MÁXIMA NA HORA ANT. (AUT) (°C)': 'temperatura_max',
-        'TEMPERATURA MÍNIMA NA HORA ANT. (AUT) (°C)': 'temperatura_min',
         'UMIDADE RELATIVA DO AR, HORARIA (%)': 'umidade_relativa',
-        'PRESSÃO ATMOSFÉRICA AO NIVEL DA ESTAÇÃO, HORARIA (mB)': 'pressao_atmosferica',
-        'VENTO, DIREÇÃO HORARIA (gr)': 'direcao_vento',
         'VENTO, VELOCIDADE HORARIA (m/s)': 'velocidade_vento',
         'RADIAÇÃO GLOBAL (Kj/m²)': 'radiacao_solar',
         'PRECIPITAÇÃO TOTAL, HORÁRIO (mm)': 'precipitacao',
         'ESTACAO': 'estacao',
         'UF': 'estado',
-        'NOME': 'cidade'
+        'NOME': 'cidade',
+
+        # Cabrobó 2020
+        'TempBulboSeco': 'temperatura',
+        'UmidadeRelativa': 'umidade_relativa',
+        'VelocidadeVento': 'velocidade_vento',
+        'RadiacaoGlobal': 'radiacao_solar',
+        'Precipitacao': 'precipitacao',
     }
-    
-    # Aplicar mapeamento
+
     df_clean = df_clean.rename(columns=column_mapping)
-    
-    # Extrair informações de data
-    if 'DATA' in df_clean.columns or 'Data' in df_clean.columns:
-        date_col = 'DATA' if 'DATA' in df_clean.columns else 'Data'
-        df_clean['data_hora'] = pd.to_datetime(df_clean[date_col], errors='coerce')
-        df_clean['ano'] = df_clean['data_hora'].dt.year
-        df_clean['mes'] = df_clean['data_hora'].dt.month
-        df_clean['dia'] = df_clean['data_hora'].dt.day
-        df_clean['hora'] = df_clean['data_hora'].dt.hour
-    
-    # Remover valores inválidos
-    numeric_columns = ['temperatura', 'umidade_relativa', 'pressao_atmosferica',
-                      'direcao_vento', 'velocidade_vento', 'radiacao_solar', 'precipitacao']
-    
+
+    # ============================================================
+    # 2. Construção / detecção da coluna data_hora
+    # ============================================================
+
+    # Se já existe data_hora, usa ela
+    if "data_hora" in df_clean.columns:
+        df_clean["data_hora"] = pd.to_datetime(df_clean["data_hora"], errors="coerce")
+
+    # Caso INMET tradicional: Data + Hora UTC
+    elif "Data" in df_clean.columns and "Hora UTC" in df_clean.columns:
+        hora_str = (
+            df_clean["Hora UTC"]
+            .astype(str)
+            .str.replace(" UTC", "", regex=False)
+            .str.zfill(4)
+        )
+        df_clean["data_hora"] = pd.to_datetime(
+            df_clean["Data"].astype(str) + " " + hora_str,
+            format="%Y/%m/%d %H%M",
+            errors="coerce"
+        )
+
+    # Caso exista só Data
+    elif "Data" in df_clean.columns:
+        df_clean["data_hora"] = pd.to_datetime(df_clean["Data"], errors="coerce")
+
+    # Caso exista DATA (maiúsculo)
+    elif "DATA" in df_clean.columns:
+        df_clean["data_hora"] = pd.to_datetime(df_clean["DATA"], errors="coerce")
+
+    else:
+        raise ValueError("Nenhuma coluna de data encontrada no arquivo!")
+
+    # Remover registros sem data válida
+    df_clean = df_clean.dropna(subset=["data_hora"])
+
+    # ============================================================
+    # 3. Normalização dos valores numéricos (com vírgula → ponto)
+    # ============================================================
+
+    numeric_columns = [
+        "temperatura", "umidade_relativa", "pressao_atmosferica",
+        "direcao_vento", "velocidade_vento", "radiacao_solar", "precipitacao"
+    ]
+
     for col in numeric_columns:
         if col in df_clean.columns:
-            # Substituir valores inválidos por NaN
-            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
-            # Remover outliers extremos (opcional)
-            if col in ['temperatura', 'temperatura_max', 'temperatura_min']:
-                df_clean[col] = df_clean[col].clip(-50, 60)  # Temperatura razoável
-            elif col == 'umidade_relativa':
-                df_clean[col] = df_clean[col].clip(0, 100)
-            elif col == 'precipitacao':
-                df_clean[col] = df_clean[col].clip(0, 500)  # Precipitação máxima razoável
-    
-    # Remover linhas com muitos valores faltantes
-    df_clean = df_clean.dropna(subset=['data_hora'], how='any')
-    
-    # Selecionar colunas relevantes
-    relevant_columns = ['data_hora', 'estacao', 'cidade', 'estado',
-                       'temperatura', 'umidade_relativa', 'pressao_atmosferica',
-                       'direcao_vento', 'velocidade_vento', 'radiacao_solar',
-                       'precipitacao', 'ano', 'mes', 'dia', 'hora']
-    
-    # Manter apenas colunas que existem
-    available_columns = [col for col in relevant_columns if col in df_clean.columns]
-    df_clean = df_clean[available_columns]
-    
-    return df_clean
+            # transforma tudo em string
+            s = df_clean[col].astype(str).str.strip()
 
+            # remove valores inválidos comuns
+            s = s.replace({"": None, "nan": None, "NaN": None, "-": None})
+
+            # vírgula decimal → ponto decimal
+            s = s.str.replace(",", ".", regex=False)
+
+            # converte finalmente para número
+            df_clean[col] = pd.to_numeric(s, errors="coerce")
+
+    # ============================================================
+    # 4. Quebrar data em partes
+    # ============================================================
+
+    df_clean["ano"] = df_clean["data_hora"].dt.year
+    df_clean["mes"] = df_clean["data_hora"].dt.month
+    df_clean["dia"] = df_clean["data_hora"].dt.day
+    df_clean["hora"] = df_clean["data_hora"].dt.hour
+
+    # ============================================================
+    # 5. Manter somente colunas relevantes (as que realmente existem)
+    # ============================================================
+
+    relevant_columns = [
+        "data_hora", "estacao", "cidade", "estado",
+        "temperatura", "umidade_relativa", "pressao_atmosferica",
+        "direcao_vento", "velocidade_vento", "radiacao_solar",
+        "precipitacao", "ano", "mes", "dia", "hora"
+    ]
+
+    existing_cols = [c for c in relevant_columns if c in df_clean.columns]
+
+    return df_clean[existing_cols]
+
+
+# ============================================================
+# PROCESSAMENTO COMPLETO DOS ARQUIVOS RAW
+# ============================================================
 
 def process_raw_files():
-    """
-    Processa todos os arquivos do bucket raw/
-    """
     print("Iniciando processamento de dados...")
-    
-    # Listar arquivos no bucket raw
-    raw_files = list_minio_files('raw')
+
+    raw_files = list_minio_files("raw")
     print(f"Encontrados {len(raw_files)} arquivos no bucket raw/")
-    
+
     all_processed = []
-    
+
     for filename in raw_files:
         try:
             print(f"\nProcessando: {filename}")
-            
-            # Ler arquivo do MinIO
-            df = read_from_minio('raw', filename)
+
+            df = read_from_minio("raw", filename)
             print(f"  - Registros originais: {len(df)}")
-            
-            # Limpar dados
+
             df_clean = clean_weather_data(df)
             print(f"  - Registros após limpeza: {len(df_clean)}")
-            
-            # Adicionar metadados
-            df_clean['arquivo_origem'] = filename
-            df_clean['processing_date'] = datetime.now().isoformat()
-            
-            # Salvar no bucket processed
+
+            df_clean["arquivo_origem"] = filename
+
             processed_filename = f"processed_{filename}"
-            write_to_minio(df_clean, 'processed', processed_filename)
-            
-            # Salvar no PostgreSQL
-            write_to_postgres(df_clean, 'weather_hourly', if_exists='append')
-            
+            write_to_minio(df_clean, "processed", processed_filename)
+
+            write_to_postgres(df_clean, "weather_hourly", if_exists="append")
+
             all_processed.append(df_clean)
-            print(f"  ✓ Processado com sucesso")
-            
+            print("  ✓ Processado com sucesso")
+
         except Exception as e:
             print(f"  ✗ Erro ao processar {filename}: {str(e)}")
-            continue
-    
-    if all_processed:
-        # Concatenar todos os dados processados
-        df_final = pd.concat(all_processed, ignore_index=True)
-        print(f"\nTotal de registros processados: {len(df_final)}")
-        
-        # Criar agregação diária
-        create_daily_aggregation(df_final)
-    
+
     print("\nProcessamento concluído!")
 
 
-def create_daily_aggregation(df: pd.DataFrame):
-    """
-    Cria agregação diária dos dados
-    """
-    print("\nCriando agregação diária...")
-    
-    df['data'] = pd.to_datetime(df['data_hora']).dt.date
-    
-    daily_agg = df.groupby(['data', 'estacao', 'cidade']).agg({
-        'temperatura': ['mean', 'max', 'min'],
-        'umidade_relativa': 'mean',
-        'pressao_atmosferica': 'mean',
-        'velocidade_vento': 'mean',
-        'radiacao_solar': 'sum',
-        'precipitacao': 'sum'
-    }).reset_index()
-    
-    # Flatten column names
-    daily_agg.columns = ['data', 'estacao', 'cidade',
-                         'temperatura_media', 'temperatura_max', 'temperatura_min',
-                         'umidade_media', 'pressao_media',
-                         'velocidade_vento_media', 'radiacao_solar_total',
-                         'precipitacao_total']
-    
-    # Salvar no PostgreSQL
-    write_to_postgres(daily_agg, 'weather_daily', if_exists='replace')
-    
-    # Salvar no MinIO
-    write_to_minio(daily_agg, 'processed', 'weather_daily.csv')
-    
-    print(f"Agregação diária criada: {len(daily_agg)} registros")
-
+# ============================================================
+# PONTO DE ENTRADA
+# ============================================================
 
 if __name__ == "__main__":
     process_raw_files()
-
